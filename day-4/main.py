@@ -43,6 +43,7 @@ import os
 import re
 import httpx
 import logging
+import json
 from typing import Optional, Dict, Any
 
 from crewai import Agent, Task, Crew, LLM
@@ -130,6 +131,19 @@ class HealthResponse(BaseModel):
     memory_enabled: bool
     tools_count: int
     a2a_enabled: bool
+
+class SearchRequest(BaseModel):
+    """Search request - finds and routes to suitable agent"""
+    query: str
+    conversation_id: str = "search-conv"
+    user_id: str = "anonymous"
+
+class SearchResponse(BaseModel):
+    """Search response"""
+    selected_agent: Dict[str, Any]
+    agent_response: str
+    timestamp: str
+    processing_time: float
 
 # ==============================================================================
 # Agent Registry
@@ -396,6 +410,162 @@ def parse_a2a_request(message: str) -> tuple[Optional[str], str]:
     
     return target_agent, clean_message
 
+# ==============================================================================
+# Search Helper Functions
+# ==============================================================================
+
+AGENTFACTS_DB_URL = "https://v0-agent-facts-database.vercel.app/api/agentfacts"
+
+async def fetch_agentfacts_from_db() -> list[Dict[str, Any]]:
+    """
+    Fetch all agentfacts from the central database
+    
+    Returns:
+        List of agentfacts dictionaries
+    """
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(AGENTFACTS_DB_URL)
+            response.raise_for_status()
+            agents = response.json()
+            
+            if isinstance(agents, list):
+                return agents
+            elif isinstance(agents, dict) and "agents" in agents:
+                return agents["agents"]
+            else:
+                return []
+    except Exception as e:
+        print(f"⚠️ Failed to fetch agentfacts from database: {str(e)}")
+        return []
+
+async def select_best_agent(query: str, agentfacts: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Use LLM to select the best agent for a given query
+    
+    Args:
+        query: User's query (e.g., "send an email")
+        agentfacts: List of agentfacts from the database
+    
+    Returns:
+        Selected agentfacts dictionary, or None if no suitable agent found
+    """
+    if not agentfacts:
+        return None
+    
+    # Create a summary of available agents for the LLM
+    agents_summary = []
+    for agent in agentfacts:
+        agent_summary = {
+            "id": agent.get("id", ""),
+            "label": agent.get("label", ""),
+            "description": agent.get("description", ""),
+            "skills": [skill.get("id", "") for skill in agent.get("skills", [])],
+            "endpoints": agent.get("endpoints", {})
+        }
+        agents_summary.append(agent_summary)
+    
+    # Use LLM to select the best agent
+    prompt = f"""You are an agent router. Given a user query and a list of available agents, select the single best agent to handle the query.
+
+User Query: "{query}"
+
+Available Agents:
+{json.dumps(agents_summary, indent=2)}
+
+Analyze the query and select the ONE agent that best matches the user's intent. Consider:
+- The agent's description and label
+- The agent's skills
+- How well the agent's capabilities match the query
+
+Respond with ONLY a JSON object in this exact format:
+{{
+    "selected_agent_id": "the id of the selected agent",
+    "reasoning": "brief explanation of why this agent was selected"
+}}
+
+If no agent is suitable, respond with:
+{{
+    "selected_agent_id": null,
+    "reasoning": "explanation of why no agent matches"
+}}
+"""
+    
+    try:
+        # Use the existing LLM to get the selection
+        selection_llm = LLM(model="openai/gpt-4o-mini", temperature=0.3)
+        response = selection_llm.call(prompt)
+        
+        # Parse the response
+        # Try to extract JSON from the response
+        response_text = str(response).strip()
+        
+        # Remove markdown code blocks if present
+        if "```json" in response_text:
+            response_text = response_text.split("```json")[1].split("```")[0].strip()
+        elif "```" in response_text:
+            response_text = response_text.split("```")[1].split("```")[0].strip()
+        
+        selection = json.loads(response_text)
+        selected_id = selection.get("selected_agent_id")
+        
+        if not selected_id:
+            return None
+        
+        # Find the full agentfacts for the selected agent
+        for agent in agentfacts:
+            if agent.get("id") == selected_id:
+                return agent
+        
+        return None
+        
+    except Exception as e:
+        print(f"⚠️ Error selecting agent with LLM: {str(e)}")
+        # Fallback: simple keyword matching
+        query_lower = query.lower()
+        for agent in agentfacts:
+            description = agent.get("description", "").lower()
+            label = agent.get("label", "").lower()
+            if query_lower in description or query_lower in label:
+                return agent
+        return None
+
+async def send_a2a_to_url(agent_url: str, message: str, conversation_id: str) -> str:
+    """
+    Send an A2A message directly to an agent URL
+    
+    Args:
+        agent_url: Full URL to the agent's A2A endpoint
+        message: Message to send
+        conversation_id: Conversation tracking ID
+    
+    Returns:
+        Response from the agent
+    """
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                agent_url,
+                json={
+                    "content": {
+                        "text": message,
+                        "type": "text"
+                    },
+                    "role": "user",
+                    "conversation_id": conversation_id
+                }
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("content", {}).get("text", str(data))
+    
+    except httpx.TimeoutException:
+        return f"Timeout connecting to agent at {agent_url}"
+    except httpx.HTTPError as e:
+        return f"Error communicating with agent: {str(e)}"
+    except Exception as e:
+        return f"Unexpected error: {str(e)}"
+
 def generate_agent_facts() -> Dict[str, Any]:
     """
     Generate AgentFacts JSON (NANDA schema)
@@ -581,6 +751,7 @@ async def root():
             "health": "GET /health",
             "query": "POST /query",
             "a2a": "POST /a2a",
+            "search": "POST /search (Auto-find and route to suitable agent)",
             "agentfacts": "GET /agentfacts",
             "agents": "GET /agents",
             "docs": "GET /docs"
@@ -788,6 +959,101 @@ async def register_agent(agent_id: str, agent_url: str):
         "agent_url": agent_url,
         "total_known_agents": len(KNOWN_AGENTS)
     }
+
+@app.post("/search", response_model=SearchResponse)
+async def search_and_route(request: SearchRequest):
+    """
+    Search endpoint - automatically finds and routes to suitable agent
+    
+    This endpoint:
+    1. Fetches all available agents from the agentfacts database
+    2. Uses an LLM to select the best agent for the query
+    3. Sends an A2A message to the selected agent
+    4. Returns the agent's response
+    
+    Example:
+        {"query": "send an email", "conversation_id": "conv-123"}
+    
+    The LLM will analyze the query and select the most suitable agent
+    from the database, then route the message to that agent.
+    """
+    start_time = datetime.now()
+    
+    try:
+        # Step 1: Fetch all agentfacts from database
+        print(f"🔍 Fetching agentfacts from database...")
+        agentfacts = await fetch_agentfacts_from_db()
+        
+        if not agentfacts:
+            raise HTTPException(
+                status_code=503,
+                detail="No agents available in the database"
+            )
+        
+        print(f"📥 Found {len(agentfacts)} agents in database")
+        
+        # Step 2: Use LLM to select the best agent
+        print(f"🤖 Selecting best agent for query: '{request.query}'")
+        selected_agent = await select_best_agent(request.query, agentfacts)
+        
+        if not selected_agent:
+            raise HTTPException(
+                status_code=404,
+                detail="No suitable agent found for this query"
+            )
+        
+        print(f"✅ Selected agent: {selected_agent.get('label', 'Unknown')}")
+        
+        # Step 3: Extract the agent's endpoint URL
+        endpoints = selected_agent.get("endpoints", {})
+        agent_url = None
+        
+        # Try static endpoints first
+        static_endpoints = endpoints.get("static", [])
+        if static_endpoints:
+            agent_url = static_endpoints[0]
+        # Try adaptive resolver
+        elif "adaptive_resolver" in endpoints:
+            agent_url = endpoints["adaptive_resolver"].get("url")
+        
+        if not agent_url:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Selected agent '{selected_agent.get('label')}' has no valid endpoint"
+            )
+        
+        # Ensure URL ends with /a2a
+        if not agent_url.endswith("/a2a"):
+            agent_url = agent_url.rstrip("/") + "/a2a"
+        
+        print(f"🔀 Routing to: {agent_url}")
+        
+        # Step 4: Send A2A message to the selected agent
+        agent_response = await send_a2a_to_url(agent_url, request.query, request.conversation_id)
+        
+        # Calculate processing time
+        end_time = datetime.now()
+        processing_time = (end_time - start_time).total_seconds()
+        
+        return SearchResponse(
+            selected_agent={
+                "id": selected_agent.get("id"),
+                "label": selected_agent.get("label"),
+                "description": selected_agent.get("description"),
+                "endpoint": agent_url
+            },
+            agent_response=agent_response,
+            timestamp=end_time.isoformat(),
+            processing_time=processing_time
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error processing search: {str(e)}"
+        )
 
 # ==============================================================================
 # Startup Event
