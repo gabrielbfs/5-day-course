@@ -95,7 +95,7 @@ class CalculatorTool(BaseTool):
 calculator_tool = CalculatorTool()
 
 # Tool 2: File Reading
-file_tool = FileReadTool()
+file_tool = FileReadTool(file_path='./blog-posts/')
 
 # Tool 3: Website Search (RAG)
 web_rag_tool = WebsiteSearchTool()
