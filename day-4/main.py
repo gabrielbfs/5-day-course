@@ -163,11 +163,11 @@ KNOWN_AGENTS: Dict[str, str] = {
 # ==============================================================================
 # 👇 EDIT THESE VALUES - This is your agent's public information
 
-MY_AGENT_USERNAME = "personal-agent-twin"  # 👈 CHANGE THIS: Your unique username
-MY_AGENT_NAME = "Personal Agent Twin"      # 👈 CHANGE THIS: Human-readable name
-MY_AGENT_DESCRIPTION = "AI agent with memory and tools for research and assistance"  # 👈 CHANGE THIS
-MY_AGENT_PROVIDER = "NANDA Student"        # 👈 CHANGE THIS: Your name
-MY_AGENT_PROVIDER_URL = "https://nanda.mit.edu"  # 👈 CHANGE THIS: Your website
+MY_AGENT_USERNAME = "gabriel-personal-agent-twin"  # 👈 CHANGE THIS: Your unique username
+MY_AGENT_NAME = "Gabriel Prime"      # 👈 CHANGE THIS: Human-readable name
+MY_AGENT_DESCRIPTION = "AI agent with memory and tools for personal assistance"  # 👈 CHANGE THIS
+MY_AGENT_PROVIDER = "Gabriel Bustamante"        # 👈 CHANGE THIS: Your name
+MY_AGENT_PROVIDER_URL = "5-day-course-production.up.railway.app"  # 👈 CHANGE THIS: Your website
 
 # Optional - usually don't need to change these
 MY_AGENT_ID = MY_AGENT_USERNAME  # Uses username as ID
@@ -242,16 +242,17 @@ my_agent_twin = Agent(
     
     goal="Answer questions, remember conversations, use tools, and communicate with other agents",
     
-    backstory=f"""
-    You are the digital twin of a student learning AI and CrewAI.
-    Your agent ID is: {MY_AGENT_ID}
-    
+    backstory="""
     Here's what you know about me:
-    - I'm a student in the MIT IAP NANDA course
-    - I'm learning about AI agents, memory systems, and deployment
-    - I love experimenting with new AI technologies
-    - My favorite programming language is Python
-    - I'm building this as part of a 5-day intensive course
+    - I'm studying for an MBA at MIT with a focus on AI applications.
+    - I'm learning how to build AI agents using CrewAI.
+    - I'm passionate about technology, entrepreneurship, and innovation.
+    - My favorite hobbies include coding, playing chess, and cooking.
+    - I'm interested in AI, machine learning, and data science.
+    - I have experience with Machine Learning and Artificial Intelligence projects.
+    - I'm currently working on my startup idea.
+    - I am from Brazil and I love to travel and explore new cultures.
+    - In my free time, I like reading sci-fi novels and hiking.
     
     MEMORY CAPABILITIES:
     You have four types of memory:
